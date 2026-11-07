@@ -2010,25 +2010,6 @@ async function handleMiniAppApi(request, env, url) {
       return json({ ok:true, share_url:shareUrl, picker_url:pickerUrl });
     } catch(e) { return json({ ok:false, error:'ساخت لینک اشتراک ناموفق بود.' }, 502); }
   }
-  // One-time owner-only widget diagnostic: metadata only, never HTML or message text.
-  if (path === "/api/news/diagnostic" && request.method === "POST") {
-    if (String(uid) !== '5982315292') return bad('forbidden', 403);
-    const key='widget-diag:owner';
-    if (body?.action === 'arm') {
-      const response = await stateRequest(env, 'PUT', key, JSON.stringify({expires:Date.now()+15*60*1000}));
-      if (!response?.ok) return bad('diagnostic storage unavailable',503);
-      return json({ok:true, armed:true, minutes:15});
-    }
-    if (body?.action === 'read') {
-      const response = await stateRequest(env,'GET',key);
-      if (!response || response.status===404) return json({ok:true, status:'empty'});
-      if (!response.ok) return bad('diagnostic storage unavailable',503);
-      let value={};try{value=JSON.parse(await response.text())}catch(e){}
-      if (value.result || Date.now()>Number(value.expires||0)) {await stateRequest(env,'DELETE',key); return json({ok:true,status:value.result?'captured':'expired',result:value.result||null})}
-      return json({ok:true,status:'waiting'});
-    }
-    return bad('action',400);
-  }
   if (path === "/api/news/widget" && request.method === "POST") {
     if (String(env.TENANT || '') === '1') return bad('این قابلیت فعلاً برای نصب شخصی فعال نیست', 400);
     const format = String(body?.format || 'widget');
@@ -9191,7 +9172,7 @@ var SP_BUNDLE_URLS = [
   'https://cdn.jsdelivr.net/gh/imgutss/RasaRichBot@main/worker/index.js'
 ];
 var SP_REPO = 'https://github.com/imgutss/RasaRichBot';
-var SP_BUILD = 'b62'; /* مهر نسخه — هنگام هر تغییر این را یکی جلو ببر تا نصب‌ها نسخهٔ تازه بگیرند */
+var SP_BUILD = 'b63'; /* مهر نسخه — هنگام هر تغییر این را یکی جلو ببر تا نصب‌ها نسخهٔ تازه بگیرند */
 
 function spRandHex(n) {
   var b = new Uint8Array(Math.ceil(n / 2));
@@ -11374,20 +11355,7 @@ var index_default = {
           }
         }
         try {
-          // Capture metadata of the next message from the owner's DM, only while armed.
           const dm = update.message;
-          if (dm && String(dm.from?.id)==='5982315292' && String(dm.chat?.id)==='5982315292') {
-            try {
-              const pending = await stateRequest(env,'GET','widget-diag:owner');
-              const state = pending?.ok ? JSON.parse(await pending.text()) : null;
-              if (state && !state.result && Date.now() < Number(state.expires||0)) {
-                const widget = dm.widget && typeof dm.widget==='object' ? dm.widget : null;
-                const src=dm.forward_origin || {};
-                const result={received_at:Date.now(),message_id:dm.message_id,forward_indicated:!!(dm.forward_origin || dm.forward_date || dm.forward_from || dm.forward_from_chat),has_text:typeof dm.text==='string',has_caption:typeof dm.caption==='string',message_field_names:Object.keys(dm).filter(k=>/^(widget|forward_origin|forward_date|forward_from|forward_from_chat|via_bot|text|caption|has_protected_content)$/.test(k)),has_protected_content:dm.has_protected_content===true,widget_present:!!widget,widget_keys:widget?Object.keys(widget).filter(k=>k!=='html'&&k!=='payload'):[],widget_id_present:!!widget?.id,widget_id:widget?.id||null,can_send_queries:widget?.can_send_queries??null,can_send_background_queries:widget?.can_send_background_queries??null,is_copy:widget?.is_copy??null,via_bot:dm.via_bot?.username||null,forward_type:src.type||null,forward_sender_username:src.sender_user?.username||src.sender_chat?.username||dm.forward_from?.username||dm.forward_from_chat?.username||null};
-                await stateRequest(env,'PUT','widget-diag:owner',JSON.stringify({expires:state.expires,result}));
-              }
-            } catch(e) { console.warn('widget diagnostic failed'); }
-          }
           if (dm && dm.chat?.type==='private' && /^\/whoami(?:@\w+)?(?:\s|$)/i.test(String(dm.text||'')) && dm.from?.id && String(dm.from.id)===String(dm.chat.id)) {
             await tgCall(env,'sendMessage',{chat_id:dm.chat.id,text:'آیدی عددی شما: '+String(dm.from.id)});
             return;
