@@ -9191,7 +9191,7 @@ var SP_BUNDLE_URLS = [
   'https://cdn.jsdelivr.net/gh/imgutss/RasaRichBot@main/worker/index.js'
 ];
 var SP_REPO = 'https://github.com/imgutss/RasaRichBot';
-var SP_BUILD = 'b60'; /* مهر نسخه — هنگام هر تغییر این را یکی جلو ببر تا نصب‌ها نسخهٔ تازه بگیرند */
+var SP_BUILD = 'b61'; /* مهر نسخه — هنگام هر تغییر این را یکی جلو ببر تا نصب‌ها نسخهٔ تازه بگیرند */
 
 function spRandHex(n) {
   var b = new Uint8Array(Math.ceil(n / 2));
@@ -11387,6 +11387,10 @@ var index_default = {
                 await stateRequest(env,'PUT','widget-diag:owner',JSON.stringify({expires:state.expires,result}));
               }
             } catch(e) { console.warn('widget diagnostic failed'); }
+          }
+          if (dm && dm.chat?.type==='private' && /^\/whoami(?:@\w+)?(?:\s|$)/i.test(String(dm.text||'')) && dm.from?.id && String(dm.from.id)===String(dm.chat.id)) {
+            await tgCall(env,'sendMessage',{chat_id:dm.chat.id,text:'آیدی عددی شما: '+String(dm.from.id)});
+            return;
           }
           if (update.callback_query) {
             await handleCallback(update.callback_query, env, origin);
