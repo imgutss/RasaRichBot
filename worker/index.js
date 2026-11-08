@@ -2010,6 +2010,27 @@ async function handleMiniAppApi(request, env, url) {
       return json({ ok:true, share_url:shareUrl, picker_url:pickerUrl });
     } catch(e) { return json({ ok:false, error:'ساخت لینک اشتراک ناموفق بود.' }, 502); }
   }
+  // Temporary owner-only file intake diagnostic; no file body is stored.
+  if (path === "/api/news/file-diagnostic" && request.method === "POST") {
+    if (String(uid)!=='5982315292') return bad('forbidden',403);
+    const key='file-widget-diag:owner';
+    if (body?.action==='arm') {
+      const res=await stateRequest(env,'PUT',key,JSON.stringify({expires:Date.now()+15*60*1000}));
+      return res?.ok ? json({ok:true,armed:true,minutes:15}) : bad('storage unavailable',503);
+    }
+    if (body?.action==='read') {
+      const res=await stateRequest(env,'GET',key);
+      if (!res || res.status===404) return json({ok:true,status:'empty'});
+      if (!res.ok) return bad('storage unavailable',503);
+      const value=JSON.parse(await res.text());
+      if (value.result || Date.now()>Number(value.expires||0)) {
+        await stateRequest(env,'DELETE',key);
+        return json({ok:true,status:value.result?'captured':'expired',result:value.result||null});
+      }
+      return json({ok:true,status:'waiting'});
+    }
+    return bad('action',400);
+  }
   if (path === "/api/news/widget" && request.method === "POST") {
     if (String(env.TENANT || '') === '1') return bad('این قابلیت فعلاً برای نصب شخصی فعال نیست', 400);
     const format = String(body?.format || 'widget');
@@ -9172,7 +9193,7 @@ var SP_BUNDLE_URLS = [
   'https://cdn.jsdelivr.net/gh/imgutss/RasaRichBot@main/worker/index.js'
 ];
 var SP_REPO = 'https://github.com/imgutss/RasaRichBot';
-var SP_BUILD = 'b63'; /* مهر نسخه — هنگام هر تغییر این را یکی جلو ببر تا نصب‌ها نسخهٔ تازه بگیرند */
+var SP_BUILD = 'b64'; /* مهر نسخه — هنگام هر تغییر این را یکی جلو ببر تا نصب‌ها نسخهٔ تازه بگیرند */
 
 function spRandHex(n) {
   var b = new Uint8Array(Math.ceil(n / 2));
@@ -11356,6 +11377,40 @@ var index_default = {
         }
         try {
           const dm = update.message;
+          // One file from owner's DM only, and only during the 15-minute test.
+          if (dm?.document && String(dm.from?.id)==='5982315292' && String(dm.chat?.id)==='5982315292' && /\.(html?|txt)$/i.test(String(dm.document.file_name||''))) {
+            try {
+              const key='file-widget-diag:owner', pending=await stateRequest(env,'GET',key);
+              const state=pending?.ok ? JSON.parse(await pending.text()) : null;
+              if (state && !state.result && Date.now()<Number(state.expires||0)) {
+                let result;
+                try {
+                  if (Number(dm.document.file_size||0)>32768) throw new Error('فایل بیشتر از ۳۲ کیلوبایت است.');
+                  const info=await tgCall(env,'getFile',{file_id:dm.document.file_id});
+                  const fp=info?.result?.file_path;
+                  if (!info?.ok || !fp || !/^[a-zA-Z0-9_./-]+$/.test(fp) || fp.includes('..')) throw new Error('دریافت فایل از تلگرام ناموفق بود.');
+                  const file=await fetch('https://api.telegram.org/file/bot'+env.BOT_TOKEN+'/'+fp);
+                  if (!file.ok) throw new Error('دریافت فایل از تلگرام ناموفق بود.');
+                  const bytes=await file.arrayBuffer();
+                  if (bytes.byteLength>32768) throw new Error('فایل بیشتر از ۳۲ کیلوبایت است.');
+                  let html=new TextDecoder('utf-8',{fatal:true}).decode(bytes).replace(/^\uFEFF/,'');
+                  if (/\.txt$/i.test(String(dm.document.file_name||'')) && !/<(?:!doctype|html|body|div|p|style|script)\b/i.test(html)) {
+                    html='<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body dir="auto"><pre style="white-space:pre-wrap;font:16px sans-serif">'+escapeHtml(html)+'</pre></body></html>';
+                  }
+                  if (!html.trim() || html.includes('\0') || new TextEncoder().encode(html).length>32768) throw new Error('محتوا یا حجم HTML معتبر نیست.');
+                  const stream=new Blob([html]).stream().pipeThrough(new CompressionStream('deflate'));
+                  if ((await new Response(stream).arrayBuffer()).byteLength>4096) throw new Error('حجم فشردهٔ ویجت بیشتر از ۴ کیلوبایت است.');
+                  const response=await fetch('https://api.telegram.org/beta/bot'+env.BOT_TOKEN+'/sendWidget',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:5982315292,html,protect_content:false})});
+                  const out=await response.json();
+                  if (!out.ok) throw new Error('تلگرام ویجت را نپذیرفت: '+String(out.description||'خطا').slice(0,130));
+                  result={ok:true,message_id:out.result?.message_id,protected:out.result?.has_protected_content===true,format:/\.txt$/i.test(dm.document.file_name)?'txt':'html'};
+                } catch(e) {result={ok:false,error:String(e?.message||'خطا در تبدیل فایل').slice(0,180)};}
+                await stateRequest(env,'PUT',key,JSON.stringify({expires:state.expires,result}));
+                if (!result.ok) await tgCall(env,'sendMessage',{chat_id:dm.chat.id,text:'آزمایش ویجت: '+result.error});
+                return;
+              }
+            } catch(e) {console.warn('file widget diagnostic failed');}
+          }
           if (dm && dm.chat?.type==='private' && /^\/whoami(?:@\w+)?(?:\s|$)/i.test(String(dm.text||'')) && dm.from?.id && String(dm.from.id)===String(dm.chat.id)) {
             await tgCall(env,'sendMessage',{chat_id:dm.chat.id,text:'آیدی عددی شما: '+String(dm.from.id)});
             return;
