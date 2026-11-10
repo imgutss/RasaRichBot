@@ -9172,7 +9172,7 @@ var SP_BUNDLE_URLS = [
   'https://cdn.jsdelivr.net/gh/imgutss/RasaRichBot@main/worker/index.js'
 ];
 var SP_REPO = 'https://github.com/imgutss/RasaRichBot';
-var SP_BUILD = 'b65'; /* مهر نسخه — هنگام هر تغییر این را یکی جلو ببر تا نصب‌ها نسخهٔ تازه بگیرند */
+var SP_BUILD = 'b66'; /* مهر نسخه — هنگام هر تغییر این را یکی جلو ببر تا نصب‌ها نسخهٔ تازه بگیرند */
 
 function spRandHex(n) {
   var b = new Uint8Array(Math.ceil(n / 2));
@@ -10415,6 +10415,48 @@ async function handleBotMembership(mcm, env, origin) {
 }
 __name(handleBotMembership, "handleBotMembership");
 
+// HTML/TXT attachments in private chat -> genuine Telegram widget (Bot API 10.4).
+// File bytes are never stored or logged; all requests are tied to the sender's DM.
+async function spFileWidget(env, msg) {
+  const doc = msg?.document;
+  if (msg?.chat?.type !== 'private' || !msg.from?.id || String(msg.from.id) !== String(msg.chat.id) || !doc || !/\.(?:html?|txt)$/i.test(String(doc.file_name || ''))) return false;
+  const chatId = msg.chat.id;
+  const notify = async (message) => { try { await tgCall(env, 'sendMessage', {chat_id: chatId, text: message}); } catch (_) {} };
+  const fail = async (message) => { await notify('⚠️ ویجت ساخته نشد: ' + message); return true; };
+  try {
+    if (Number(doc.file_size || 0) > 32768) return await fail('حجم فایل باید حداکثر ۳۲ کیلوبایت باشد.');
+    if (typeof doc.file_id !== 'string' || !doc.file_id) return await fail('شناسهٔ فایل معتبر نیست.');
+    const fileInfo = await tgCall(env, 'getFile', {file_id: doc.file_id});
+    const path = fileInfo?.result?.file_path;
+    if (!fileInfo?.ok || typeof path !== 'string' || !/^[A-Za-z0-9_./-]+$/.test(path) || path.includes('..')) return await fail('دریافت فایل از تلگرام ناموفق بود؛ دوباره تلاش کن.');
+    const download = await fetch('https://api.telegram.org/file/bot' + env.BOT_TOKEN + '/' + path);
+    if (!download.ok || !download.body) return await fail('دریافت فایل از تلگرام ناموفق بود؛ دوباره تلاش کن.');
+    const reader = download.body.getReader(); const chunks = []; let length = 0;
+    for (;;) {
+      const part = await reader.read(); if (part.done) break;
+      length += part.value.byteLength;
+      if (length > 32768) { await reader.cancel().catch(() => {}); return await fail('حجم فایل باید حداکثر ۳۲ کیلوبایت باشد.'); }
+      chunks.push(part.value);
+    }
+    const bytes = new Uint8Array(length); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    let html;
+    try { html = new TextDecoder('utf-8', {fatal: true}).decode(bytes).replace(/^\uFEFF/, ''); }
+    catch (_) { return await fail('فایل باید با کدگذاری UTF-8 ذخیره شده باشد.'); }
+    if (!html.trim() || html.includes('\0')) return await fail('فایل خالی است یا محتوای معتبر ندارد.');
+    // TXT may contain HTML code; plain text is safely escaped and wrapped in HTML.
+    if (/\.txt$/i.test(String(doc.file_name || '')) && !/<(?:!doctype\b|[a-z][\w:-]*(?:\s[^<>]*?)?\s*\/?)>/i.test(html)) {
+      html = '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body dir="auto" style="margin:0;padding:16px;background:#111827;color:#f1f5f9"><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:16px/1.7 sans-serif;margin:0">' + escapeHtml(html) + '</pre></body></html>';
+    }
+    if (new TextEncoder().encode(html).length > 32768) return await fail('حجم HTML پس از تبدیل باید حداکثر ۳۲ کیلوبایت باشد.');
+    const res = await fetch('https://api.telegram.org/bot' + env.BOT_TOKEN + '/sendWidget', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chatId,html})});
+    const data = await res.json();
+    if (!data?.ok && /INPUT_MEDIA_WIDGET_TOO_LARGE/i.test(String(data?.description || ''))) return await fail('حجم فشردهٔ ویجت از ۴ کیلوبایت بیشتر است.');
+    if (!data?.ok || !data?.result?.widget || !data?.result?.message_id) return await fail('تلگرام ویجت را نپذیرفت؛ محتوا و حجم فایل را بررسی کن.');
+    return true;
+  } catch (_) { return await fail('خطا در دریافت یا ساخت ویجت؛ دوباره تلاش کن.'); }
+}
+
 async function handleMessage(msg, env, origin) {
   // community line? consume it before any other text handling
   if (await communityDispatch(msg, env, origin).catch(() => false)) return;
@@ -11360,6 +11402,7 @@ var index_default = {
             await tgCall(env,'sendMessage',{chat_id:dm.chat.id,text:'آیدی عددی شما: '+String(dm.from.id)});
             return;
           }
+          if (dm && await spFileWidget(env, dm)) return;
           if (update.callback_query) {
             await handleCallback(update.callback_query, env, origin);
           } else if (update.my_chat_member) {
